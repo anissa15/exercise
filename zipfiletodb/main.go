@@ -3,10 +3,13 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"context"
 	"log"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 type Row struct {
@@ -43,9 +46,31 @@ func main() {
 		// populate data per batch
 		batch := 100
 		p := initPopulate(scanner, batch)
+
+		// insert asynchronously using 25 workers
+		workers := 25
+		sem := semaphore.NewWeighted(int64(workers))
+		ctx := context.TODO()
+
+		var total int
 		for p.Scan() {
-			log.Println("jumlah data per scan :", len(p.rows))
+			if err := sem.Acquire(ctx, 1); err != nil {
+				log.Println("failed to acquire semaphore with error:", err)
+				break
+			}
+			total += len(p.rows)
+			go func(rows []Row, total int) {
+				defer sem.Release(1)
+				log.Println("total:", total, "data:", rows[len(rows)-1])
+			}(p.rows, total)
 		}
+
+		// Acquire all of the tokens to wait for any remaining workers to finish.
+		if err := sem.Acquire(ctx, int64(workers)); err != nil {
+			log.Fatalln("failed to acquire semaphore with error:", err)
+		}
+
+		log.Println("DONE")
 	}
 }
 
@@ -69,6 +94,9 @@ func (p *populate) Scan() bool {
 	for p.scanner.Scan() {
 		// convert line into Row struct
 		t := strings.Split(p.scanner.Text(), "|")
+		if len(t) < 7 {
+			continue
+		}
 		date, err := time.Parse("20060102", t[2])
 		if err != nil {
 			continue
