@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -30,6 +32,13 @@ func main() {
 		log.Fatalln("failed to read", zipFileName, "with error:", err)
 	}
 	defer zr.Close()
+
+	// init db connection
+	db, err := sqlx.Connect("postgres", "host=localhost user=anissa dbname=exercise sslmode=disable")
+	if err != nil {
+		log.Fatalln("failed connect to db with error:", err)
+	}
+	defer db.Close()
 
 	// read each file inside zip file
 	for _, f := range zr.File {
@@ -59,9 +68,19 @@ func main() {
 				break
 			}
 			total += len(p.rows)
+			if total%100_000 == 0 {
+				// print log every 1M row data for tracing
+				log.Println("processing", total)
+			}
 			go func(rows []Row, total int) {
 				defer sem.Release(1)
-				log.Println("total:", total, "data:", rows[len(rows)-1])
+				_, err := db.NamedExec(`
+					insert into short_sale (market_center, symbol, dt, tm, short_type, size, price) 
+					values (:market_center,:symbol,:dt,:tm,:short_type,:size,:price)`,
+					rows)
+				if err != nil {
+					log.Fatalln("failed insert to db with error:", err)
+				}
 			}(p.rows, total)
 		}
 
